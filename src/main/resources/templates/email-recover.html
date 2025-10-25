@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Restablecimiento de Contraseña</title>
+    <style>
+        body {
+          font-family: 'Arial', sans-serif;
+          background-color: #f6f9fc;
+          margin: 0;
+          padding: 0;
+        }
+        .container {
+          max-width: 600px;
+          margin: 40px auto;
+          background: #ffffff;
+          border-radius: 10px;
+          box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+          overflow: hidden;
+        }
+        .header {
+          background: linear-gradient(90deg, #007bff, #00c6ff);
+          color: white;
+          padding: 20px;
+          text-align: center;
+        }
+        .content {
+          padding: 30px;
+          color: #333;
+          line-height: 1.6;
+        }
+        .code {
+          font-size: 22px;
+          background: #f1f1f1;
+          padding: 12px 20px;
+          border-radius: 6px;
+          display: inline-block;
+          letter-spacing: 2px;
+          margin: 20px 0;
+        }
+        .footer {
+          text-align: center;
+          padding: 20px;
+          font-size: 12px;
+          color: #999;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h2>Restablecimiento de Contraseña</h2>
+    </div>
+    <div class="content">
+        <p>Hola <strong>${nombreCompleto}</strong>,</p>
+        <p>Hemos recibido una solicitud para restablecer tu contraseña. Tu nueva contraseña temporal es:</p>
+        <div class="code">${tempPassword}</div>
+        <p>Por motivos de seguridad, te recomendamos cambiarla al iniciar sesión.</p>
+        <p>Si no realizaste esta solicitud, puedes ignorar este mensaje.</p>
+    </div>
+    <div class="footer">
+        &copy; 2025 AppFood — Todos los derechos reservados.
+    </div>
+</div>
+</body>
+</html>
