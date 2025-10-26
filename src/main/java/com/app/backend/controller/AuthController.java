@@ -40,8 +40,13 @@ public class AuthController {
 
         String newPassword = body.get("newPassword");
         String token = authHeader.replace("Bearer ", "");
+        return authService.changePassword(token, null, newPassword);
+    }
 
-        return authService.changePassword(token, null, newPassword); // null porque no requiere la anterior
+    @PostMapping("/refresh")
+    public ResponseEntity<Map<String, Object>> refresh(@RequestBody Map<String, String> body) {
+        String refreshToken = body.get("refreshToken");
+        return authService.refreshToken(refreshToken);
     }
 
 

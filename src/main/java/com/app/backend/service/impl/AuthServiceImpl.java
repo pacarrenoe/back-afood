@@ -5,93 +5,82 @@ import com.app.backend.dto.RegisterRequest;
 import com.app.backend.model.User;
 import com.app.backend.repository.UserRepository;
 import com.app.backend.security.JwtUtil;
+import com.app.backend.service.AuditService;
 import com.app.backend.service.AuthService;
 import com.app.backend.service.EmailService;
 import com.app.backend.utils.ResponseUtil;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class AuthServiceImpl implements AuthService {
 
-    @Autowired
-    private UserRepository userRepository;
+    @Autowired private UserRepository userRepository;
+    @Autowired private JwtUtil jwtUtil;
+    @Autowired private EmailService emailService;
+    @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private AuditService auditService;
 
-    @Autowired
-    private JwtUtil jwtUtil;
+    @Value("${app.security.max-failed-attempts}") private int MAX_FAILED_ATTEMPTS;
+    @Value("${app.security.lock-time-minutes}") private int LOCK_TIME_MINUTES;
+
+    private final Map<String, LocalDateTime> recoverAttempts = new ConcurrentHashMap<>();
 
     @Override
     public ResponseEntity<Map<String, Object>> login(LoginRequest request) {
-        try {
-            // Buscar por username o por email
-            Optional<User> userOpt = userRepository.findByUsername(request.getUsernameOrEmail());
-            if (userOpt.isEmpty()) {
-                userOpt = userRepository.findByEmail(request.getUsernameOrEmail());
-            }
+        Optional<User> userOpt = userRepository.findByUsername(request.getUsernameOrEmail());
+        if (userOpt.isEmpty()) userOpt = userRepository.findByEmail(request.getUsernameOrEmail());
+        if (userOpt.isEmpty()) return ResponseUtil.error("Usuario o correo no encontrado", Map.of(), 404);
 
-            if (userOpt.isEmpty()) {
-                return ResponseUtil.error("Usuario o correo no encontrado", Map.of(), 404);
-            }
+        User user = userOpt.get();
 
-            User user = userOpt.get();
-
-            // Validar contraseña
-            if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-                Map<String, Object> errorData = Map.of("error", "Usuario o contraseña incorrectos");
-                return ResponseUtil.error("Credenciales inválidas", errorData, 401);
-            }
-
-            // Generar token JWT
-            String token = jwtUtil.generateToken(user.getUsername());
-
-            // Si el usuario tiene una contraseña temporal → forzar cambio
-            if (user.isMustChangePassword()) {
-                Map<String, Object> data = Map.of(
-                        "token", token,
-                        "username", user.getUsername(),
-                        "mustChangePassword", true,
-                        "message", "Debes cambiar tu contraseña temporal antes de continuar"
-                );
-                return ResponseUtil.success("Login exitoso (requiere cambio de contraseña)", data);
-            }
-
-            // Login normal
-            Map<String, Object> data = Map.of(
-                    "token", token,
-                    "username", user.getUsername(),
-                    "email", user.getEmail(),
-                    "nombreCompleto", user.getNombreCompleto(),
-                    "cargo", user.getCargo(),
-                    "rol", user.getRol(),
-                    "salario", user.getSalario(),
-                    "fechaRegistro", user.getFechaRegistro(),
-                    "mustChangePassword", false
-            );
-
-            return ResponseUtil.success("Login exitoso", data);
-
-        } catch (Exception e) {
-            return ResponseUtil.error("Error en el proceso de login",
-                    Map.of("detalle", e.getMessage()), 500);
+        if (user.getAccountLockedUntil() != null && user.getAccountLockedUntil().isAfter(LocalDateTime.now())) {
+            long minutosRestantes = ChronoUnit.MINUTES.between(LocalDateTime.now(), user.getAccountLockedUntil());
+            return ResponseUtil.error("Cuenta bloqueada temporalmente. Intenta en " + minutosRestantes + " minutos.", Map.of(), 423);
         }
+
+        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            user.setFailedAttempts(user.getFailedAttempts() + 1);
+
+            if (user.getFailedAttempts() >= MAX_FAILED_ATTEMPTS) {
+                user.setAccountLockedUntil(LocalDateTime.now().plusMinutes(LOCK_TIME_MINUTES));
+                user.setFailedAttempts(0);
+                userRepository.save(user);
+                return ResponseUtil.error("Cuenta bloqueada por exceso de intentos. Espera " + LOCK_TIME_MINUTES + " minutos.", Map.of(), 423);
+            }
+
+            userRepository.save(user);
+            return ResponseUtil.error("Contraseña incorrecta. Intento " + user.getFailedAttempts() + " de " + MAX_FAILED_ATTEMPTS, Map.of(), 401);
+        }
+
+        user.setFailedAttempts(0);
+        user.setAccountLockedUntil(null);
+        userRepository.save(user);
+
+        auditService.logAction(user.getUsername(), "LOGIN", "Acceso exitoso");
+
+        String token = jwtUtil.generateToken(user.getUsername());
+        String refresh = jwtUtil.generateRefreshToken(user.getUsername());
+        return ResponseUtil.success("Login exitoso", Map.of(
+                "token", token,
+                "refreshToken", refresh,
+                "username", user.getUsername(),
+                "rol", user.getRol()
+        ));
     }
-
-
-
-
-    @Autowired
-    private PasswordEncoder passwordEncoder;
 
     @Override
     public ResponseEntity<Map<String, Object>> register(RegisterRequest request) {
-        if (userRepository.findByUsername(request.getUsername()).isPresent()) {
+        if (userRepository.findByUsername(request.getUsername()).isPresent())
             return ResponseUtil.error("Usuario ya existe", Map.of(), 400);
-        }
 
         User user = new User();
         user.setUsername(request.getUsername());
@@ -99,59 +88,44 @@ public class AuthServiceImpl implements AuthService {
         user.setEmail(request.getEmail());
         user.setNombreCompleto(request.getNombreCompleto());
         user.setCargo(request.getCargo());
-        user.setRol(request.getCargo().equalsIgnoreCase("gerente") ? "admin" : "user");
+        user.setRol(request.getCargo().equalsIgnoreCase("gerente") ? "ADMIN" : "USER");
         user.setSalario(request.getSalario());
         user.setFechaRegistro(LocalDateTime.now());
 
         userRepository.save(user);
+        auditService.logAction(user.getUsername(), "REGISTER", null);
 
         return ResponseUtil.success("Usuario registrado exitosamente", Map.of(
                 "username", user.getUsername(),
-                "rol", user.getRol(),
-                "cargo", user.getCargo()
+                "rol", user.getRol()
         ));
     }
 
-    @Autowired
-    private EmailService emailService;
-
     @Override
     public ResponseEntity<Map<String, Object>> recoverPassword(String email) {
-        try {
-            if (email == null || email.trim().isEmpty()) {
-                return ResponseUtil.error("El correo electrónico es obligatorio", Map.of(), 400);
-            }
+        LocalDateTime lastAttempt = recoverAttempts.get(email);
+        if (lastAttempt != null && ChronoUnit.MINUTES.between(lastAttempt, LocalDateTime.now()) < 5)
+            return ResponseUtil.error("Demasiadas solicitudes, intenta en 5 minutos", Map.of(), 429);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
-            if (userOpt.isEmpty()) {
-                return ResponseUtil.error("Correo no encontrado", Map.of(), 404);
-            }
+        recoverAttempts.put(email, LocalDateTime.now());
 
-            User user = userOpt.get();
-            String tempPassword = UUID.randomUUID().toString().substring(0, 8);
-            user.setPassword(passwordEncoder.encode(tempPassword));
-            user.setMustChangePassword(true);
-            userRepository.save(user);
+        Optional<User> userOpt = userRepository.findByEmail(email);
+        if (userOpt.isEmpty()) return ResponseUtil.error("Correo no encontrado", Map.of(), 404);
 
-            // Cargar plantilla y reemplazar variables
-            String htmlTemplate = loadEmailTemplate("email-recover.html")
-                    .replace("${nombreCompleto}", user.getNombreCompleto())
-                    .replace("${tempPassword}", tempPassword);
+        User user = userOpt.get();
+        String tempPassword = UUID.randomUUID().toString().substring(0, 8);
+        user.setPassword(passwordEncoder.encode(tempPassword));
+        user.setMustChangePassword(true);
+        userRepository.save(user);
 
-            // Enviar correo HTML
-            emailService.sendEmail(
-                    user.getEmail(),
-                    "🔐 Restablecimiento de contraseña - AppFood",
-                    htmlTemplate
-            );
+        String html = loadEmailTemplate("email-recover.html")
+                .replace("${nombreCompleto}", user.getNombreCompleto())
+                .replace("${tempPassword}", tempPassword);
 
-            return ResponseUtil.success("Contraseña restablecida y enviada por correo.",
-                    Map.of("email", user.getEmail()));
+        emailService.sendEmail(user.getEmail(), "Restablecimiento de contraseña - AppFood", html);
+        auditService.logAction(user.getUsername(), "RECOVER_PASSWORD", null);
 
-        } catch (Exception e) {
-            return ResponseUtil.error("Error al restablecer contraseña",
-                    Map.of("detalle", e.getMessage()), 500);
-        }
+        return ResponseUtil.success("Contraseña temporal enviada por correo.", Map.of("email", user.getEmail()));
     }
 
     private String loadEmailTemplate(String filename) {
@@ -160,61 +134,37 @@ public class AuthServiceImpl implements AuthService {
                 "UTF-8")) {
             return scanner.useDelimiter("\\A").next();
         } catch (Exception e) {
-            throw new RuntimeException("No se pudo cargar la plantilla de correo: " + filename, e);
+            throw new RuntimeException("No se pudo cargar plantilla: " + filename, e);
         }
     }
-
 
     @Override
     public ResponseEntity<Map<String, Object>> changePassword(String token, String oldPassword, String newPassword) {
-        try {
-            String username = jwtUtil.extractUsername(token);
-            Optional<User> userOpt = userRepository.findByUsername(username);
+        String username = jwtUtil.extractUsername(token);
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
 
-            if (userOpt.isEmpty()) {
-                return ResponseUtil.error("Usuario no encontrado", Map.of(), 404);
-            }
+        if (oldPassword == null || !passwordEncoder.matches(oldPassword, user.getPassword()))
+            return ResponseUtil.error("Contraseña anterior incorrecta", Map.of(), 400);
 
-            User user = userOpt.get();
+        if (passwordEncoder.matches(newPassword, user.getPassword()))
+            return ResponseUtil.error("La nueva contraseña no puede ser igual a la anterior", Map.of(), 400);
 
-            // Si el usuario está obligado a cambiar contraseña, no pedimos la anterior
-            if (user.isMustChangePassword()) {
-                if (passwordEncoder.matches(newPassword, user.getPassword())) {
-                    return ResponseUtil.error("La nueva contraseña no puede ser igual a la temporal", Map.of(), 400);
-                }
+        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setMustChangePassword(false);
+        userRepository.save(user);
+        auditService.logAction(username, "CHANGE_PASSWORD", null);
 
-                user.setPassword(passwordEncoder.encode(newPassword));
-                user.setMustChangePassword(false);
-                userRepository.save(user);
-
-                return ResponseUtil.success("Contraseña actualizada correctamente", Map.of(
-                        "username", user.getUsername(),
-                        "mustChangePassword", false
-                ));
-            }
-
-            // Si no está en modo obligatorio, requiere la antigua
-            if (oldPassword == null || !passwordEncoder.matches(oldPassword, user.getPassword())) {
-                return ResponseUtil.error("Contraseña anterior incorrecta", Map.of(), 400);
-            }
-
-            user.setPassword(passwordEncoder.encode(newPassword));
-            userRepository.save(user);
-
-            return ResponseUtil.success("Contraseña cambiada correctamente", Map.of(
-                    "username", user.getUsername(),
-                    "mustChangePassword", false
-            ));
-
-        } catch (Exception e) {
-            return ResponseUtil.error("Error al cambiar la contraseña",
-                    Map.of("detalle", e.getMessage()), 500);
-        }
+        return ResponseUtil.success("Contraseña cambiada correctamente", Map.of("username", username));
     }
 
+    @Override
+    public ResponseEntity<Map<String, Object>> refreshToken(String refreshToken) {
+        if (!jwtUtil.validateToken(refreshToken))
+            return ResponseUtil.error("Refresh token inválido o expirado", Map.of(), 401);
 
-
-
-
-
+        String username = jwtUtil.extractUsername(refreshToken);
+        String newAccessToken = jwtUtil.generateToken(username);
+        return ResponseUtil.success("Token renovado exitosamente", Map.of("accessToken", newAccessToken));
+    }
 }

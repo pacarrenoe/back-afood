@@ -10,5 +10,5 @@ public interface AuthService {
     ResponseEntity<Map<String, Object>> register(RegisterRequest request);
     ResponseEntity<Map<String, Object>> recoverPassword(String email);
     ResponseEntity<Map<String, Object>> changePassword(String token, String oldPassword, String newPassword);
-
+    ResponseEntity<Map<String, Object>> refreshToken(String refreshToken);
 }

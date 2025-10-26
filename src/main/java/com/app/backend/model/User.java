@@ -32,11 +32,17 @@ public class User {
     @Column(nullable = false)
     private boolean mustChangePassword = false;
 
+    @Column(name = "failed_attempts")
+    private int failedAttempts = 0;
+
+    @Column(name = "account_locked_until")
+    private LocalDateTime accountLockedUntil;
+
 
     public User() {
     }
 
-    public User(Long id, String username, String password, String email, String nombreCompleto, String cargo, String rol, Integer salario, LocalDateTime fechaRegistro, boolean mustChangePassword) {
+    public User(Long id, String username, String password, String email, String nombreCompleto, String cargo, String rol, Integer salario, LocalDateTime fechaRegistro, boolean mustChangePassword, int failedAttempts, LocalDateTime accountLockedUntil) {
         this.id = id;
         this.username = username;
         this.password = password;
@@ -47,6 +53,8 @@ public class User {
         this.salario = salario;
         this.fechaRegistro = fechaRegistro;
         this.mustChangePassword = mustChangePassword;
+        this.failedAttempts = failedAttempts;
+        this.accountLockedUntil = accountLockedUntil;
     }
 
     public Long getId() {
@@ -127,5 +135,21 @@ public class User {
 
     public void setMustChangePassword(boolean mustChangePassword) {
         this.mustChangePassword = mustChangePassword;
+    }
+
+    public int getFailedAttempts() {
+        return failedAttempts;
+    }
+
+    public void setFailedAttempts(int failedAttempts) {
+        this.failedAttempts = failedAttempts;
+    }
+
+    public LocalDateTime getAccountLockedUntil() {
+        return accountLockedUntil;
+    }
+
+    public void setAccountLockedUntil(LocalDateTime accountLockedUntil) {
+        this.accountLockedUntil = accountLockedUntil;
     }
 }
